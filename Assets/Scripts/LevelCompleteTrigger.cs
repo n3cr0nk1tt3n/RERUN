@@ -1,74 +1,86 @@
 using UnityEngine;
 using TMPro;
 using System.Collections;
-using UnityEngine.SceneManagement; // For scene reload
 
+[RequireComponent(typeof(Collider2D))]
 public class LevelCompleteTrigger : MonoBehaviour
 {
     [Header("UI Elements")]
-    [Tooltip("Drag the 'Level Complete' TMP GameObject here.")]
-    public GameObject levelCompleteText;
-
-    [Tooltip("Drag the background GameObject here (e.g. a panel or image).")]
+    public GameObject levelCompletePanel;
     public GameObject background;
+    public TextMeshProUGUI levelCompleteTMP;
 
     [Header("Audio Settings")]
     public AudioSource audioSource;
     public AudioClip levelCompleteClip;
 
-    private bool levelEnded = false;
+    [Header("Flow")]
+    public bool isFinalLevel = false;                 // <-- set true in Future1
+    public float successBreakSeconds = 5f;
+    public string nextSceneName = "Future1";          // ignored if isFinalLevel = true
 
-    private void Start()
+    bool levelEnded = false;
+
+    void Reset()
     {
-        if (audioSource == null)
-        {
-            audioSource = GetComponent<AudioSource>();
-        }
+        var col = GetComponent<Collider2D>();
+        if (col) col.isTrigger = true;
     }
 
-    private void OnTriggerEnter2D(Collider2D collision)
+    void Start()
+    {
+        if (audioSource == null) audioSource = GetComponent<AudioSource>();
+        if (levelCompletePanel) levelCompletePanel.SetActive(false);
+        if (background)         background.SetActive(false);
+        if (levelCompleteTMP)   levelCompleteTMP.gameObject.SetActive(false);
+    }
+
+    void OnTriggerEnter2D(Collider2D collision)
     {
         if (levelEnded) return;
+        if (!collision.CompareTag("Player")) return;
 
-        if (collision.CompareTag("Player"))
-        {
-            levelEnded = true;
-            StartCoroutine(HandleLevelComplete());
-        }
+        levelEnded = true;
+        StartCoroutine(HandleLevelComplete());
     }
 
-    private IEnumerator HandleLevelComplete()
+    IEnumerator HandleLevelComplete()
     {
-        // Play sound
-        if (audioSource != null && levelCompleteClip != null)
+        var tm = TimerManager.Instance;
+        if (tm != null) tm.StopTimer();
+
+        if (background)       background.SetActive(true);
+        if (levelCompletePanel) levelCompletePanel.SetActive(true);
+        if (levelCompleteTMP) levelCompleteTMP.gameObject.SetActive(true);
+
+        if (levelCompleteTMP && tm)
         {
-            audioSource.PlayOneShot(levelCompleteClip);
-            yield return new WaitForSecondsRealtime(levelCompleteClip.length);
+            string run = TimerManager.FormatTime(tm.ElapsedThisRun);
+            levelCompleteTMP.text = $"<b>Level Complete!</b>\nYour Time: {run}";
         }
 
-        // Freeze time
-        Time.timeScale = 0f;
+        if (audioSource != null && levelCompleteClip != null)
+            audioSource.PlayOneShot(levelCompleteClip);
 
-        // Show UI
-        if (levelCompleteText != null)
-            levelCompleteText.SetActive(true);
+        yield return new WaitForSecondsRealtime(successBreakSeconds);
+
+        if (isFinalLevel)
+        {
+            // Show YOU WIN and stop; player decides to Play Again?
+            if (GameManager.Instance != null)
+                GameManager.Instance.ShowWinUI();
+            yield break;
+        }
+
+        // Not final level: prepare next scene with shadow logic (baseline - elapsed)
+        if (GameSceneManager.Instance != null && tm != null)
+        {
+            GameSceneManager.Instance.LoadSceneAfter(nextSceneName, 0f, prepareShadowAllotment: true);
+        }
         else
-            Debug.LogWarning("LevelCompleteText is not assigned.");
-
-        if (background != null)
-            background.SetActive(true);
-        else
-            Debug.LogWarning("Background GameObject is not assigned.");
-
-        Debug.Log("Level Complete!");
-
-        // Wait 10 seconds real-time (ignoring timeScale)
-        yield return new WaitForSecondsRealtime(10f);
-
-        // Unfreeze time
-        Time.timeScale = 1f;
-
-        // Reload current scene to reset everything
-        SceneManager.LoadScene(SceneManager.GetActiveScene().buildIndex);
+        {
+            if (tm != null) tm.FinalizeRunAndPrepareNext();
+            UnityEngine.SceneManagement.SceneManager.LoadScene(nextSceneName);
+        }
     }
 }
