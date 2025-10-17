@@ -8,14 +8,14 @@ public class GameManager : MonoBehaviour
     public static GameManager Instance { get; private set; }
 
     [Header("Start Scene")]
-    [Tooltip("The scene to load when the player clicks PLAY AGAIN?")]
+    [Tooltip("Scene to load when the player clicks PLAY AGAIN?")]
     public string startSceneName = "Past1";
 
-    // Scene-bound UI (bound each scene via ResultUIBinder)
-    private GameObject resultBackground;
-    private GameObject resultPanel;
-    private TextMeshProUGUI resultTMP;
-    private Button playAgainButton;
+    // Scene-bound UI (provided by ResultUIBinder per scene)
+    GameObject resultBackground;
+    GameObject resultPanel;
+    TextMeshProUGUI resultTMP;
+    Button playAgainButton;
 
     void Awake()
     {
@@ -23,23 +23,36 @@ public class GameManager : MonoBehaviour
         Instance = this;
         DontDestroyOnLoad(gameObject);
 
-        // Subscribe to timer expiry -> YOU LOSE
-        if (TimerManager.Instance != null)
-            TimerManager.Instance.OnTimerExpired += HandleTimerExpired;
+        // Hide result UI whenever a new scene loads (binder will rebind the refs)
+        SceneManager.sceneLoaded += OnSceneLoadedRebind;
 
-        // Ensure we re-bind OnTimerExpired if TimerManager is recreated (unlikely)
+        // Re-hook timer expiry on each scene load
         SceneManager.sceneLoaded += (_, __) =>
         {
             if (TimerManager.Instance != null)
             {
-                // Clear double-subscribe
                 TimerManager.Instance.OnTimerExpired -= HandleTimerExpired;
                 TimerManager.Instance.OnTimerExpired += HandleTimerExpired;
             }
         };
     }
 
-    // Called by ResultUIBinder in each scene
+    void OnDestroy()
+    {
+        if (Instance == this)
+            SceneManager.sceneLoaded -= OnSceneLoadedRebind;
+    }
+
+    void OnSceneLoadedRebind(Scene scene, LoadSceneMode mode)
+    {
+        // If these are already bound for this scene, ensure they start hidden
+        if (resultBackground) resultBackground.SetActive(false);
+        if (resultPanel)      resultPanel.SetActive(false);
+        if (resultTMP)        resultTMP.gameObject.SetActive(false);
+        if (playAgainButton)  playAgainButton.gameObject.SetActive(false);
+    }
+
+    /// <summary>Called by ResultUIBinder in each scene to provide scene UI references.</summary>
     public void BindResultUI(GameObject background, GameObject panel, TextMeshProUGUI tmp, Button againBtn)
     {
         resultBackground = background;
@@ -47,10 +60,11 @@ public class GameManager : MonoBehaviour
         resultTMP        = tmp;
         playAgainButton  = againBtn;
 
-        // Make sure they're hidden at scene start
+        // Ensure clean state
         if (resultBackground) resultBackground.SetActive(false);
         if (resultPanel)      resultPanel.SetActive(false);
         if (resultTMP)        resultTMP.gameObject.SetActive(false);
+
         if (playAgainButton)
         {
             playAgainButton.gameObject.SetActive(false);
@@ -59,13 +73,13 @@ public class GameManager : MonoBehaviour
         }
     }
 
-    // === Events ===
-    private void HandleTimerExpired()
+    // === Timer event ===
+    void HandleTimerExpired()
     {
         ShowLoseUI();
     }
 
-    // === Public API (call from gameplay to end the game with a win) ===
+    // === Public controls ===
     public void ShowWinUI()
     {
         ShowResultUI("<b>YOU WIN!</b>\nPlay again?");
@@ -77,27 +91,46 @@ public class GameManager : MonoBehaviour
     }
 
     // === Internals ===
-    private void ShowResultUI(string message)
+    void ShowResultUI(string message)
     {
-        // Pause gameplay if you want: (we'll just stop timer; no timeScale change needed)
+        // Make sure gameplay is unpaused and timer is stopped
+        Time.timeScale = 1f;
         if (TimerManager.Instance != null) TimerManager.Instance.StopTimer();
+
+        if (resultBackground == null || resultPanel == null || resultTMP == null || playAgainButton == null)
+            Debug.LogWarning("[GameManager] Result UI not bound in this scene (ResultUIBinder missing/incorrect).");
 
         if (resultBackground) resultBackground.SetActive(true);
         if (resultPanel)      resultPanel.SetActive(true);
+
         if (resultTMP)
         {
             resultTMP.gameObject.SetActive(true);
             resultTMP.text = message;
         }
+
         if (playAgainButton)  playAgainButton.gameObject.SetActive(true);
     }
 
-    private void OnPlayAgainClicked()
+    void OnPlayAgainClicked()
     {
-        // Reset timer cycle and go back to start scene
-        if (TimerManager.Instance != null)
-            TimerManager.Instance.ResetCycle();   // helper added below
+        // 1) Restore timescale in case anything paused it
+        Time.timeScale = 1f;
 
+        // 2) Reset persistent gameplay state
+        if (TimerManager.Instance != null)
+            TimerManager.Instance.ResetCycle();
+
+        // (Optional) Reset other singletons here, e.g. SoulsManager:
+        // SoulsManager.Instance?.ResetSouls(0);
+
+        // 3) Hide current result UI immediately (polish)
+        if (resultBackground) resultBackground.SetActive(false);
+        if (resultPanel)      resultPanel.SetActive(false);
+        if (resultTMP)        resultTMP.gameObject.SetActive(false);
+        if (playAgainButton)  playAgainButton.gameObject.SetActive(false);
+
+        // 4) Load the start scene fresh
         SceneManager.LoadScene(startSceneName, LoadSceneMode.Single);
     }
 }

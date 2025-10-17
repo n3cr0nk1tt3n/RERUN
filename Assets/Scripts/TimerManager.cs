@@ -7,14 +7,14 @@ public class TimerManager : MonoBehaviour
 {
     public static TimerManager Instance { get; private set; }
 
-    [Header("Default Allotment (used by Past1)")]
-    [Tooltip("The starting countdown shown in Past1 (and any scene with no pending allotment).")]
+    [Header("Default Allotment (first/Past scene)")]
+    [Tooltip("Baseline starting countdown for the first run (e.g., Past1).")]
     [Min(1f)] public float startSeconds = 60f;
 
     [Header("UI (optional)")]
     [Tooltip("TMP text showing the current countdown.")]
     public TextMeshProUGUI timerText;
-    [Tooltip("TMP text showing the target/shadow time for THIS level (previous run’s time).")]
+    [Tooltip("TMP text showing the shadow/target time for THIS level.")]
     public TextMeshProUGUI targetText;
 
     [Header("Behavior")]
@@ -26,57 +26,53 @@ public class TimerManager : MonoBehaviour
     public float TimeRemaining { get; private set; }
     public float ElapsedThisRun { get; private set; }
 
-    // The previous run’s elapsed time you need to beat in THIS scene.
-    private float targetToBeatSeconds = -1f;      // -1 => none
+    // Shadow target to beat in THIS scene (set from prior scene’s elapsed)
+    float targetToBeatSeconds = -1f;    // -1 => none
     public bool HasTargetToBeat => targetToBeatSeconds >= 0f;
     public float TargetToBeatSeconds => targetToBeatSeconds;
 
-    // Baseline start captured from the FIRST scene you load with this manager alive (your Past1).
-    private float baselineStartSeconds = -1f;
-
-    // The starting allotment to use for the NEXT scene load (baseline - lastElapsed).
-    private float pendingNextAllotment = -1f;     // -1 => none pending
+    // Race-your-shadow pipeline
+    float baselineStartSeconds = -1f;   // captured from the very first scene this manager sees
+    float pendingNextAllotment = -1f;   // next scene starts with this (baseline - lastElapsed)
 
     public event Action OnTimerExpired;
 
     // -------------------- Lifecycle --------------------
-    private void Awake()
+    void Awake()
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
         DontDestroyOnLoad(gameObject);
+
         SceneManager.sceneLoaded += HandleSceneLoaded;
     }
 
-    private void OnDestroy()
+    void OnDestroy()
     {
         if (Instance == this)
             SceneManager.sceneLoaded -= HandleSceneLoaded;
     }
 
-    private void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
+    void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
     {
-        // Capture the baseline from the FIRST scene that loads (your Past1).
+        // Capture baseline once (first scene that loads with this alive)
         if (baselineStartSeconds < 0f)
             baselineStartSeconds = Mathf.Max(0.001f, startSeconds);
 
-        // Choose starting allotment for THIS scene:
-        // - If we prepared a pending allotment (baseline - lastElapsed), use it.
-        // - Otherwise, use the scene’s configured startSeconds (e.g., Past1).
+        // Decide the starting allotment for THIS scene
         float startingAllotment = (pendingNextAllotment >= 0f)
             ? Mathf.Max(0.001f, pendingNextAllotment)
             : Mathf.Max(0.001f, startSeconds);
 
-        // Consume the pending allotment (it applies only once).
+        // Consume pending (one-shot)
         pendingNextAllotment = -1f;
 
         StartNewRun(startingAllotment, autoStartOnSceneLoaded);
-        UpdateTargetUI();
+        UpdateTargetUI(); // reflect any shadow target for this scene
     }
 
     // -------------------- Public API --------------------
-
-    /// <summary>Rebind scene TMPs and immediately refresh text.</summary>
+    /// <summary>Bind scene TMPs and push the current values immediately.</summary>
     public void RebindUI(TextMeshProUGUI timer, TextMeshProUGUI target = null)
     {
         timerText = timer;
@@ -85,7 +81,7 @@ public class TimerManager : MonoBehaviour
         UpdateTargetUI();
     }
 
-    /// <summary>Begin a new run with a specific allotment.</summary>
+    /// <summary>Start a new run for the active scene.</summary>
     public void StartNewRun(float allotmentSeconds, bool startImmediately)
     {
         TimeRemaining  = Mathf.Max(0.001f, allotmentSeconds);
@@ -97,7 +93,7 @@ public class TimerManager : MonoBehaviour
     public void PauseTimer()  => IsRunning = false;
     public void ResumeTimer() { if (TimeRemaining > 0f) IsRunning = true; }
 
-    /// <summary>Stop counting (keeps ElapsedThisRun as final).</summary>
+    /// <summary>Stop the countdown and keep current elapsed as final.</summary>
     public void StopTimer()
     {
         IsRunning = false;
@@ -106,39 +102,56 @@ public class TimerManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Call at end of level. Prepares next scene to:
+    /// Call at end of level. Prepares the next scene to:
     ///  - start at (baselineStartSeconds - this ElapsedThisRun),
-    ///  - show this Elapsed as the target/shadow to beat.
+    ///  - use this Elapsed as the target/shadow to beat.
     /// </summary>
     public void FinalizeRunAndPrepareNext()
     {
         StopTimer();
 
-        // The shadow/target for the NEXT scene is this run’s elapsed.
+        // Next scene must beat this
         targetToBeatSeconds = ElapsedThisRun;
 
-        // Next scene’s starting countdown = baselineStart - this elapsed.
-        float remainingFromBaseline = (baselineStartSeconds >= 0f ? baselineStartSeconds : startSeconds) - ElapsedThisRun;
+        // Next scene’s countdown = baseline - this run
+        float baseStart = (baselineStartSeconds >= 0f ? baselineStartSeconds : startSeconds);
+        float remainingFromBaseline = baseStart - ElapsedThisRun;
         pendingNextAllotment = Mathf.Max(0.001f, remainingFromBaseline);
 
         UpdateTargetUI();
     }
 
-    /// <summary>Clear any target/shadow requirement (useful to reset flow).</summary>
+    /// <summary>Clear shadow requirement (fresh level).</summary>
     public void ClearTargetRequirement()
     {
         targetToBeatSeconds = -1f;
         UpdateTargetUI();
     }
 
-    /// <summary>True if current run is strictly faster than the shadow/target.</summary>
+    /// <summary>True if current run’s elapsed is strictly faster than shadow/target.</summary>
     public bool DidBeatTargetThisLevel()
     {
-        if (!HasTargetToBeat) return true; // No target means auto-pass
+        if (!HasTargetToBeat) return true;
         return ElapsedThisRun < targetToBeatSeconds;
     }
 
-    /// <summary>MM:SS.mmm formatting.</summary>
+    /// <summary>Reset all persistent timer/shadow state for a clean restart (used by PLAY AGAIN?).</summary>
+    public void ResetCycle()
+    {
+        StopTimer();
+        TimeRemaining  = 0f;
+        ElapsedThisRun = 0f;
+        IsRunning      = false;
+
+        targetToBeatSeconds  = -1f;
+        pendingNextAllotment = -1f;
+        baselineStartSeconds = -1f;  // recapture on next scene load
+
+        UpdateTimerUI();
+        UpdateTargetUI();
+    }
+
+    /// <summary>MM:SS.mmm</summary>
     public static string FormatTime(float seconds)
     {
         if (seconds < 0f) seconds = 0f;
@@ -150,7 +163,7 @@ public class TimerManager : MonoBehaviour
     }
 
     // -------------------- Update & UI --------------------
-    private void Update()
+    void Update()
     {
         if (!IsRunning) return;
 
@@ -170,13 +183,13 @@ public class TimerManager : MonoBehaviour
         UpdateTimerUI();
     }
 
-    private void UpdateTimerUI()
+    void UpdateTimerUI()
     {
         if (timerText != null)
             timerText.text = FormatTime(TimeRemaining);
     }
 
-    private void UpdateTargetUI()
+    void UpdateTargetUI()
     {
         if (targetText == null) return;
 
@@ -185,20 +198,4 @@ public class TimerManager : MonoBehaviour
         else
             targetText.text = string.Empty;
     }
-    
-    // Add inside TimerManager class
-    public void ResetCycle()
-    {
-        StopTimer();
-        // Clear target/shadow and any prepared allotment so we start fresh on startSceneName
-        var field = typeof(TimerManager).GetField("targetToBeatSeconds", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        if (field != null) field.SetValue(this, -1f);
-
-        field = typeof(TimerManager).GetField("pendingNextAllotment", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        if (field != null) field.SetValue(this, -1f);
-
-        field = typeof(TimerManager).GetField("baselineStartSeconds", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        if (field != null) field.SetValue(this, -1f);
-    }
-
 }
